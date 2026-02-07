@@ -194,6 +194,112 @@ ok "powertop auto-tune 已启用"
 echo
 
 # ----------------------------
+# [NEW] Suspend / Resume stability fixes (Surface "sleep of death")
+# ----------------------------
+echo "[7.5/8] Suspend/Resume fix (prevent sleep-of-death)"
+
+# 0) Ensure tools exist
+apt-get install -y upower pciutils || true
+
+# 1) Prefer s2idle over deep (often more stable on Surface)
+#    We set kernel param: mem_sleep_default=s2idle
+#    NOTE: takes effect after update-grub + reboot
+if [[ -f /etc/default/grub ]]; then
+  if grep -q 'mem_sleep_default=' /etc/default/grub; then
+    # already set - leave it
+    ok "GRUB 已包含 mem_sleep_default 参数（跳过）"
+  else
+    # append to GRUB_CMDLINE_LINUX_DEFAULT
+    sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 mem_sleep_default=s2idle"/' /etc/default/grub || true
+    ok "已设置 mem_sleep_default=s2idle（重启后生效）"
+  fi
+  update-grub || true
+else
+  warn "/etc/default/grub 不存在（可能不是 GRUB 引导），跳过 mem_sleep_default 设置"
+fi
+
+# 2) Disable USB autosuspend in TLP (common cause of resume issues)
+#    This is conservative: higher power use, but usually more stable.
+if [[ -f /etc/default/tlp ]]; then
+  if grep -q '^USB_AUTOSUSPEND=' /etc/default/tlp; then
+    sed -i 's/^USB_AUTOSUSPEND=.*/USB_AUTOSUSPEND=0/' /etc/default/tlp
+  else
+    echo 'USB_AUTOSUSPEND=0' >> /etc/default/tlp
+  fi
+  systemctl restart tlp >/dev/null 2>&1 || true
+  ok "已设置 TLP: USB_AUTOSUSPEND=0"
+else
+  warn "/etc/default/tlp 不存在（TLP 可能没安装/路径不同）"
+fi
+
+# 3) i915 resume fix hook (rebind Intel GPU after resume) + logging
+#    Helps on some Surfaces with black screen / stuck GPU after wake.
+cat >/usr/local/bin/surface-sleep-fix <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-}"
+
+log() { logger -t surface-sleep-fix "$*"; }
+
+rebind_i915() {
+  local dev
+  dev="$(lspci -Dn | awk '$0 ~ /VGA compatible controller/ && $0 ~ /8086/ {print $1; exit}')"
+  [[ -z "${dev:-}" ]] && { log "no Intel VGA device found"; return 0; }
+  # Convert 00:02.0 -> 0000:00:02.0
+  dev="0000:${dev}"
+  local path="/sys/bus/pci/devices/${dev}"
+  [[ -d "$path" ]] || { log "PCI path not found: $path"; return 0; }
+
+  if [[ -w "${path}/driver/unbind" && -w /sys/bus/pci/drivers/i915/bind ]]; then
+    echo "$dev" > "${path}/driver/unbind" || true
+    sleep 1
+    echo "$dev" > /sys/bus/pci/drivers/i915/bind || true
+    log "rebound i915 for ${dev}"
+  else
+    log "i915 bind/unbind not available"
+  fi
+}
+
+case "$ACTION" in
+  pre)
+    # before sleep
+    log "pre-sleep: mem_sleep=$(cat /sys/power/mem_sleep 2>/dev/null || echo '?')"
+    ;;
+  post)
+    # after resume
+    log "post-resume: running i915 rebind"
+    rebind_i915
+    ;;
+  *)
+    echo "Usage: $0 pre|post" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x /usr/local/bin/surface-sleep-fix
+ok "已安装 /usr/local/bin/surface-sleep-fix"
+
+# 4) systemd sleep hook
+install -d /lib/systemd/system-sleep
+cat >/lib/systemd/system-sleep/surface-sleep-fix <<'EOF'
+#!/usr/bin/env bash
+# systemd calls: <script> pre|post <sleep-type>
+case "$1" in
+  pre)  /usr/local/bin/surface-sleep-fix pre  || true ;;
+  post) /usr/local/bin/surface-sleep-fix post || true ;;
+esac
+exit 0
+EOF
+chmod +x /lib/systemd/system-sleep/surface-sleep-fix
+ok "已安装 systemd sleep hook: /lib/systemd/system-sleep/surface-sleep-fix"
+
+echo
+info "Suspend 修复已添加。建议重启后测试：systemctl suspend"
+echo
+
+
+# ----------------------------
 # 8) 安装 surface-doctor + surface 命令（surface doctor）
 # ----------------------------
 echo "[8/8] Install surface-doctor and `surface doctor` command"
@@ -219,6 +325,12 @@ echo
 echo "[0/6] Surface kernel"
 if uname -r | grep -qi surface; then ok "正在使用 linux-surface 内核 ✔"
 else warn "当前不是 linux-surface 内核（建议安装 linux-image-surface）"
+fi
+echo
+
+echo "[?/?] Sleep mode"
+if [[ -r /sys/power/mem_sleep ]]; then
+  info "mem_sleep options: $(cat /sys/power/mem_sleep)"
 fi
 echo
 
