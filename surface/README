@@ -1,0 +1,26 @@
+# 安装脚本运行步骤
+
+## 情况1： Surface 中没有脚本也没有`git`
+
+```bash
+nano surface-setup.sh
+```
+
+将bash脚本复制到`surface-setup.sh`并保存退出
+
+```bash
+chmod +x surface-setup.sh
+sudo ./surface-setup.sh
+```
+
+## 情况2： Surface 中有`git` 可以拉取仓库中代码
+
+```bash
+git clone https://github.com/allen-shielder/linux-bootstrap.git
+```
+
+```bash
+chmod +x linux-bootstrap/surface/surface-setup.sh
+sudo ./linux-bootstrap/surface/surface-setup.sh
+```
+
