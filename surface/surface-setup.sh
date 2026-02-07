@@ -108,6 +108,46 @@ systemctl enable --now iptsd >/dev/null 2>&1 || true
 echo
 
 # ----------------------------
+# [ADD] Debian non-free-firmware + Intel firmware (GPU/Wi-Fi) + microcode
+# ----------------------------
+echo "[2.5/8] Firmware & microcode (Intel iGPU / Wi-Fi)"
+
+# Detect Debian codename (bookworm/trixie/etc.)
+source /etc/os-release || true
+CODENAME="${VERSION_CODENAME:-}"
+
+# Ensure non-free-firmware component enabled (Debian 12+)
+# We try to append missing components to existing "deb ... main" lines.
+if [[ -n "${CODENAME}" && -f /etc/apt/sources.list ]]; then
+  cp -a /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%F-%H%M%S)" || true
+
+  # Add contrib/non-free/non-free-firmware if missing on each deb line
+  sed -i -E \
+    's/^(deb\s+[^#\n]+\s+'"${CODENAME}"'\s+main)(\s*)$/\1 contrib non-free non-free-firmware\2/;
+     s/^(deb\s+[^#\n]+\s+'"${CODENAME}"'-updates\s+main)(\s*)$/\1 contrib non-free non-free-firmware\2/;
+     s/^(deb\s+[^#\n]+\s+'"${CODENAME}"'-security\s+main)(\s*)$/\1 contrib non-free non-free-firmware\2/' \
+    /etc/apt/sources.list || true
+
+  ok "已尝试在 /etc/apt/sources.list 启用 contrib/non-free/non-free-firmware"
+else
+  warn "未检测到 VERSION_CODENAME 或 /etc/apt/sources.list 不存在，跳过自动启用 non-free-firmware"
+fi
+
+apt-get update -y
+
+# Install CPU microcode + common firmware bundles
+apt-get install -y intel-microcode firmware-linux firmware-misc-nonfree || true
+
+# Optional: install Intel Wi-Fi firmware if available
+if apt-cache show firmware-iwlwifi >/dev/null 2>&1; then
+  apt-get install -y firmware-iwlwifi || true
+  ok "已安装 firmware-iwlwifi（Intel Wi-Fi）"
+fi
+
+ok "固件/微码安装完成（建议重启生效）"
+echo
+
+# ----------------------------
 # 3) 安装 Surface 硬件驱动包（尽力安装：有些包依型号/仓库版本）
 # ----------------------------
 echo "[3/8] Install Surface hardware drivers (best-effort)"
